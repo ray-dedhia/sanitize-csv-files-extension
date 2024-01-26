@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>Sanitize CSV Files</title>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width,initial-scale=1"/>
+        <py-config>
+            [[runtimes]]
+            src = "runtime/pyodide.js"
+            name = "pyodide-0.21.3"
+            lang = "python"
+        </py-config>
+        <link rel="stylesheet" href="popup.css"/>
+        <link rel="stylesheet" href="runtime/pyscript.css"/>
+        <script defer src="runtime/pyscript.js"></script>
+    </head>
+    <body>
+        <h2>Sanitize CSV Files</h2>
+        <p>Click "Choose File" in order to select a CSV file to sanitize.</p>
+        <input type="file" id="myfile" name="myfile">
+        <py-script>
+            import asyncio
+            from js import document, FileReader, Uint8Array, File, URL
+            import pyodide 
+            import io
+            import re
+
+            # TODO: import from local file; see https://github.com/pyscript/pyscript/issues/146
+            whitelisted_strings_set = set(["abs","accrint","accrintm","acos","acosh","acot","acoth","aggregate","address","amordegrc","amorlinc","and","arabic","areas","arraytotext","asc","asin","asinh","atan","atanh","avedev","average","averagea","averageif","averageifs","bahttext","base","besseli","besselj","besselk","bessely","betadist","betainv","binomdist","bitand","bitlshift","bitor","bitrshift","bitxor","call","ceiling","cell","char","chidist","chiinv","chitest","choose","clean","code","column","columns","combin","combina","complex","concat","concatenate","confidence","convert","correl","cos","cosh","cot","coth","count","counta","countblank","countif","countifs","coupdaybs","coupdays","coupdaysnc","coupncd","coupnum","couppcd","covar","critbinom","csc","csch","cubekpimember","cubemember","cubememberproperty","cuberankedmember","cubeset","cubesetcount","cubevalue","cumipmt","cumprinc","date","datedif","datevalue","daverage","day","days","db","dbcs","dcount","dcounta","ddb","decimal","degrees","delta","devsq","dget","disc","dmax","dmin","dollar","dollarde","dollarfr","dproduct","dstdev","dstdevp","dsum","duration","dvar","dvarp","edate","effect","encodeurl","eomonth","erf","erfc","euroconvert","even","exact","exp","expondist","fact","factdouble","false","fdist","filter","filterxml","finv","fisher","fisherinv","fixed","floor","forecast","formulatext","frequency","ftest","fv","fvschedule","gamma","gammadist","gammainv","gammaln","gauss","gcd","geomean","gestep","getpivotdata","growth","harmean","hlookup","hour","hyperlink","hypgeomdist","if","iferror","ifna","ifs","imabs","image","imaginary","imargument","imconjugate","imcos","imcosh","imcot","imcsc","imcsch","imdiv","imexp","imln","impower","improduct","imreal","imsec","imsech","imsin","imsinh","imsqrt","imsub","imsum","imtan","index","indirect","info","int","intercept","intrate","ipmt","irr","isblank","iserr","iserror","iseven","isformula","islogical","isna","isnontext","isnumber","isodd","isref","istext","isoweeknum","ispmt","jis","kurt","large","lcm","linest","ln","log","logest","loginv","lognormdist","lookup","lower","match","max","maxa","maxifs","mdeterm","mduration","median","min","minifs","mina","minute","minverse","mirr","mmult","mod","mode","month","mround","multinomial","munit","n","na","negbinomdist","networkdays","nominal","normdist","norminv","normsdist","normsinv","not","now","nper","npv","numbervalue","odd","oddfprice","oddfyield","oddlprice","oddlyield","offset","or","pduration","pearson","percentile","percentrank","permut","permutationa","phi","phonetic","pi","pmt","poisson","power","ppmt","price","pricedisc","pricemat","prob","product","proper","pv","quartile","quotient","radians","rand","randarray","randbetween","rank","rate","received","rept","roman","round","rounddown","roundup","row","rows","rri","rsq","rtd","sec","sech","second","sequence","seriessum","sheet","sheets","sign","sin","sinh","skew","sln","slope","small","sort","sortby","sqrt","sqrtpi","standardize","stockhistory","stdev","stdeva","stdevp","stdevpa","steyx","substitute","subtotal","sum","sumif","sumifs","sumproduct","sumsq","switch","syd","t","tan","tanh","tbilleq","tbillprice","tbillyield","tdist","text","time","timevalue","tinv","today","transpose","trend","trim","trimmean","true","trunc","ttest","type","unichar","unicode","unique","upper","value","var"])
+
+            def sanitize_cell(cell):
+                cell_copy = cell
+                # remove tab, carriage return, and newline characters
+                cell_copy = re.sub('[\t\n\r]', "", cell)
+                # remove spaces at start (and end) of cell
+                cell_copy = cell_copy.strip()
+
+                # check if cell is command
+                p_comm = re.compile("^[=+-@%]")
+                if p_comm.match(cell_copy):
+                    # check if cell contains only whitelisted characters
+                    # (whitelisted characters: alphanumeric characters, operations (i.e. "=()+-/*"), spaces)
+                    p_whitelist = re.compile("^[0-9a-zA-Z/\+\*-=()\s]+$")
+                    # if command cell contains non-whitelisted characters, convert cell to string and return
+                    if not p_whitelist.match(cell_copy):
+                        return '"""' + cell + '"""'
+
+                    # if cell contains no letters, return cell as is
+                    p_alpha = re.compile("[a-zA-Z]")
+                    if not p_alpha.search(cell_copy):
+                        return cell
+
+                    # allow for referencing cell values with A1 reference style
+                    p_a1_ref_range = re.compile("[A-Z]+[0-9]+:[A-Z]+[0-9]+")
+                    cell_copy = re.sub(p_a1_ref_range, "0", cell_copy)
+                    p_a1_ref = re.compile("[A-Z]+[0-9]+")
+                    cell_copy = re.sub(p_a1_ref, "0", cell_copy)
+
+                    # create list of all text strings
+                    last_char = cell_copy[0]
+                    strings = [last_char] if last_char.isalpha() else []
+                    for i in range(1,len(cell_copy)):
+                        if cell_copy[i].isalpha():
+                            if last_char.isalpha() and len(strings) > 0:
+                                strings[-1] += cell_copy[i].lower()
+                            else:
+                                strings.append(cell_copy[i].lower())
+                        last_char = cell_copy[i]
+
+                    # check if all text strings are whitelisted functions (not case sensitive)
+                    strings_set = set(strings)
+                    # if so, return cell as is
+                    if strings_set.issubset(whitelisted_strings_set):
+                        return cell
+                    # else, convert cell to string and return
+                    return '"""' + cell + '"""'
+
+                # else if not command
+                # sanitize any URLs
+                if "https://" in cell_copy:
+                    cell = cell.replace("https://", "https : // ") 
+                if "http://" in cell_copy:
+                    cell = cell.replace("http://", "http : // ") 
+                if "www." in cell_copy:
+                    cell = cell.replace("www.", "www . ") 
+                return cell
+             
+            async def process_file(event):
+                fileList = event.target.files.to_py()
+             
+                i = 0
+                for f in fileList:
+                    # skip file if not CSV
+                    if f.name[-4:] != ".csv":
+                        continue
+
+                    # get data from file
+                    data = await f.text()
+
+                    # sanitize CSV data
+                    rows_list = data.split("\n")
+                    download_rows_list = []
+                    for row in rows_list:
+                        row_list = row.split(",")
+                        download_row_list = []
+                        for cell in row_list:
+                            download_row_list.append(sanitize_cell(cell))
+                        download_row = ",".join(download_row_list)
+                        download_rows_list.append(download_row)
+                    download_data = "\n".join(download_rows_list)
+
+                    # download sanitized CSV file
+                    fn = f.name[:-4] + "_sanitized.csv"
+                    encoded_data = download_data.encode('utf-8')
+                    my_stream = io.BytesIO(encoded_data)
+
+                    js_array = Uint8Array.new(len(encoded_data))
+                    js_array.assign(my_stream.getbuffer())
+
+                    file = File.new([js_array], fn, {type: "text/plain"})
+                    url = URL.createObjectURL(file)
+
+                    hidden_link = document.createElement("a")
+                    hidden_link.setAttribute("download", fn)
+                    hidden_link.setAttribute("href", url)
+                    hidden_link.click()
+             
+            def main():
+                # Create a Python proxy for the callback function
+                # process_file() is your function to process events from FileReader
+                file_event = pyodide.ffi.create_proxy(process_file)
+             
+                # Set the listener to the callback
+                e = document.getElementById("myfile")
+                e.addEventListener("change", file_event, False)
+             
+            main()
+        </py-script>
+    </body>
+</html>
